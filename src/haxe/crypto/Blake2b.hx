@@ -112,14 +112,10 @@ class Blake2b {
         var len = data.length;
         
         while (len > 0) {
-            var left = BLOCK_SIZE - buflen;
-            var fill = len > left ? left : len;
-            
-            buf.blit(buflen, data, pos, fill);
-            buflen += fill;
-            pos += fill;
-            len -= fill;
-            
+            // A full buffer is compressed (as a non-final block) only once MORE
+            // input follows. The last block of a message must reach digest() still buffered so
+            // it is compressed with the final flag -- the vendored version compressed it here as
+            // soon as it filled, so every message of length 128k (k >= 1) got a wrong digest.
             if (buflen == BLOCK_SIZE) {
                 t[0] = Int64.add(t[0], Int64.ofInt(BLOCK_SIZE));
                 if (Int64.compare(t[0], Int64.ofInt(BLOCK_SIZE)) < 0) 
@@ -127,6 +123,14 @@ class Blake2b {
                 compress(false);
                 buflen = 0;
             }
+
+            var left = BLOCK_SIZE - buflen;
+            var fill = len > left ? left : len;
+            
+            buf.blit(buflen, data, pos, fill);
+            buflen += fill;
+            pos += fill;
+            len -= fill;
         }
     }
     

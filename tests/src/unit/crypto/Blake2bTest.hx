@@ -119,6 +119,36 @@ class Blake2bTest extends Test {
 
 	var key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f";
 
+	// Block-boundary vectors (message length a multiple of 128 bytes and its neighbours), from
+	// Python: hashlib.blake2b(bytes(i % 256 for i in range(n))) and the same with key=bytes(range(64)).
+	// update() used to compress a full buffer as a non-final block immediately, so every message
+	// of length 128k (k >= 1) got a wrong digest; the original vectors above stop well short of 128.
+	var boundaryVectors:Array<{len:Int, hash:String, keyed:String}> = [
+		{len: 0, hash: "786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce", keyed: "10ebb67700b1868efb4417987acf4690ae9d972fb7a590c2f02871799aaa4786b5e996e8f0f4eb981fc214b005f42d2ff4233499391653df7aefcbc13fc51568"},
+		{len: 1, hash: "2fa3f686df876995167e7c2e5d74c4c7b6e48f8068fe0e44208344d480f7904c36963e44115fe3eb2a3ac8694c28bcb4f5a0f3276f2e79487d8219057a506e4b", keyed: "961f6dd1e4dd30f63901690c512e78e4b45e4742ed197c3c5e45c549fd25f2e4187b0bc9fe30492b16b0d0bc4ef9b0f34c7003fac09a5ef1532e69430234cebd"},
+		{len: 127, hash: "b6292669ccd38d5f01caae96ba272c76a879a45743afa0725d83b9ebb26665b731f1848c52f11972b6644f554c064fa90780dbbbf3a89d4fc31f67df3e5857ef", keyed: "76d2d819c92bce55fa8e092ab1bf9b9eab237a25267986cacf2b8ee14d214d730dc9a5aa2d7b596e86a1fd8fa0804c77402d2fcd45083688b218b1cdfa0dcbcb"},
+		{len: 128, hash: "2319e3789c47e2daa5fe807f61bec2a1a6537fa03f19ff32e87eecbfd64b7e0e8ccff439ac333b040f19b0c4ddd11a61e24ac1fe0f10a039806c5dcc0da3d115", keyed: "72065ee4dd91c2d8509fa1fc28a37c7fc9fa7d5b3f8ad3d0d7a25626b57b1b44788d4caf806290425f9890a3a2a35a905ab4b37acfd0da6e4517b2525c9651e4"},
+		{len: 129, hash: "f59711d44a031d5f97a9413c065d1e614c417ede998590325f49bad2fd444d3e4418be19aec4e11449ac1a57207898bc57d76a1bcf3566292c20c683a5c4648f", keyed: "64475dfe7600d7171bea0b394e27c9b00d8e74dd1e416a79473682ad3dfdbb706631558055cfc8a40e07bd015a4540dcdea15883cbbf31412df1de1cd4152b91"},
+		{len: 255, hash: "5b21c5fd8868367612474fa2e70e9cfa2201ffeee8fafab5797ad58fefa17c9b5b107da4a3db6320baaf2c8617d5a51df914ae88da3867c2d41f0cc14fa67928", keyed: "142709d62e28fcccd0af97fad0f8465b971e82201dc51070faa0372aa43e92484be1c1e73ba10906d5d1853db6a4106e0a7bf9800d373d6dee2d46d62ef2a461"},
+		{len: 256, hash: "1ecc896f34d3f9cac484c73f75f6a5fb58ee6784be41b35f46067b9c65c63a6794d3d744112c653f73dd7deb6666204c5a9bfa5b46081fc10fdbe7884fa5cbf8", keyed: "b72071e096277edebb8ee5134dd3714996307ba3a55aa4733d412abbe28e909e10e57e6fbfb4ef53b3b960518294ff889a90829254412e2a60b85add07a3674f"},
+		{len: 257, hash: "d8bfe068de0b4f9fa876a3f8024eb9f7b0029fd5dcf251199e065cee89e1a282c8dbf0442f2ade7294ac1c6be19b388dc990c34d8cb79f5f10c54fa813834fda", keyed: "3a9e68b5a91ccd5de231647907c427b82dcbeaaca7077a71474516d44a6c96a230590534bd9f3bafa8143f8be67b3abce7b6405329664c47c0c22f5f53ac1369"},
+		{len: 384, hash: "49b3d01a1f21431d4a9b65e0450bb0444b7d1deb81131d650d9cbefcad7436a0e51050445af39f3f1312dbe3e2d03601ba309d3bc3c46bc5bdc768feebe176fb", keyed: "8852e7a9b0d3578708eee9eabc3ff38e423d9416cabf3daa8d5e141a8bbad945eaf3e539a22348e389cd7240fb274de5baafbfe191dd77cb13073af6b3c14d1e"},
+	];
+
+	public function testBlockBoundaries():Void {
+		var blake2bKey = Bytes.ofHex(key);
+		for (v in boundaryVectors) {
+			var input = Bytes.alloc(v.len);
+			for (i in 0...v.len) input.set(i, i % 256);
+			eq(Blake2b.hash(input).toHex().toLowerCase(), v.hash);
+			eq(Blake2b.hash(input, 64, blake2bKey).toHex().toLowerCase(), v.keyed);
+			// Fed one byte at a time, the incremental API must agree.
+			var b = new Blake2b(64);
+			for (i in 0...v.len) b.update(input.sub(i, 1));
+			eq(b.digest().toHex().toLowerCase(), v.hash);
+		}
+	}
+
 	public function test():Void {
 		trace("Blake2b for " + inputs.length + " inputs");
 		var blake2bKey = Bytes.ofHex(key);

@@ -211,52 +211,104 @@ class SecureRandom {
 	}
 
 	static function winInt():Int {
+		var b = winBytes(4);
+		return (b.get(0) << 24) | (b.get(1) << 16) | (b.get(2) << 8) | b.get(3);
+	}
+
+	/**
+	 * Windows has no /dev/urandom, and this library has no native binding, so bytes come from
+	 * .NET's RandomNumberGenerator through PowerShell. Two rules:
+	 *
+	 * - **Fail closed.** The output must decode to exactly the requested number of bytes, or
+	 *   this throws. It never substitutes Math.random() for a value it cannot parse, and never
+	 *   returns a buffer whose tail was left as zeros because the output was short.
+	 * - **Batch.** Starting PowerShell takes hundreds of milliseconds, so bytes are fetched
+	 *   WIN_BATCH_BYTES at a time into a private pool and handed out once each (never reused).
+	 *
+	 * A native call (BCryptGenRandom) would be better than a child process; this is the fallback
+	 * until a binding exists.
+	 */
+	static inline var WIN_BATCH_BYTES = 4096;
+
+	static var winPool:Null<Bytes> = null;
+	static var winPoolPos = 0;
+	#if target.threaded
+	static var winLock = new sys.thread.Mutex();
+	#end
+
+	static function winBytes(length:Int):Bytes {
+		#if target.threaded
+		winLock.acquire();
+		#end
+		try {
+			var result = Bytes.alloc(length);
+			var filled = 0;
+			while (filled < length) {
+				if (winPool == null || winPoolPos >= winPool.length) {
+					winPool = winFetch(length - filled > WIN_BATCH_BYTES ? length - filled : WIN_BATCH_BYTES);
+					winPoolPos = 0;
+				}
+				var take = winPool.length - winPoolPos;
+				if (take > length - filled)
+					take = length - filled;
+				result.blit(filled, winPool, winPoolPos, take);
+				// Wipe what was handed out so the pool never holds bytes that left it.
+				winPool.fill(winPoolPos, take, 0);
+				winPoolPos += take;
+				filled += take;
+			}
+			#if target.threaded
+			winLock.release();
+			#end
+			return result;
+		} catch (e:Dynamic) {
+			#if target.threaded
+			winLock.release();
+			#end
+			throw e;
+		}
+	}
+
+	static function winFetch(count:Int):Bytes {
+		var output:String = null;
+		var code = -1;
 		try {
 			var proc = new sys.io.Process("powershell", [
 				"-NoProfile",
+				"-NonInteractive",
 				"-Command",
-				"$r=[System.Security.Cryptography.RNGCryptoServiceProvider]::new();" + "$b=New-Object byte[] 4;$r.GetBytes($b);$r.Dispose();$b-join','"
+				"$r=[System.Security.Cryptography.RandomNumberGenerator]::Create();"
+				+ "$b=New-Object byte[] " + count + ";$r.GetBytes($b);$r.Dispose();[Convert]::ToBase64String($b)"
 			]);
-
-			var output = StringTools.trim(proc.stdout.readAll().toString());
-			var code = proc.exitCode();
+			output = proc.stdout.readAll().toString();
+			code = proc.exitCode();
 			proc.close();
-			if (code == 0 && output.length > 0) {
-				var parts = output.split(",");
-				if (parts.length >= 4) {
-					var bytes = [for (i in 0...4) Std.parseInt(parts[i])];
-					if (bytes.indexOf(null) == -1) {
-						return (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
-					}
-				}
-			}
-		} catch (_) {}
-		throw "No secure random source available";
+		} catch (e:Dynamic) {
+			throw "No secure random source available: " + e;
+		}
+		if (code != 0)
+			throw "No secure random source available: PowerShell exited with " + code;
+		return decodeWindowsOutput(output, count);
 	}
 
-	static function winBytes(length:Int):Bytes {
+	/**
+	 * Decodes PowerShell's base64 output and checks it is exactly `expected` bytes; throws
+	 * otherwise. Separate so it can be tested on any platform.
+	 */
+	public static function decodeWindowsOutput(output:Null<String>, expected:Int):Bytes {
+		if (output == null)
+			throw "No secure random source available: no output";
+		var text = StringTools.trim(output);
+		var decoded:Bytes = null;
 		try {
-			var proc = new sys.io.Process("powershell", ["-NoProfile",
-				"-Command",
-				"$r=[System.Security.Cryptography.RNGCryptoServiceProvider]::new();"
-				+ "$b=New-Object byte[] "
-				+ length
-				+ ";$r.GetBytes($b);$r.Dispose();$b-join','"]);
-
-			var output = StringTools.trim(proc.stdout.readAll().toString());
-			var code = proc.exitCode();
-			proc.close();
-			if (code == 0 && output.length > 0) {
-				var parts = output.split(",");
-				var result = Bytes.alloc(length);
-				for (i in 0...Math.floor(Math.min(length, parts.length))) {
-					var val = Std.parseInt(parts[i]);
-					result.set(i, val != null ? val : Math.floor(Math.random() * 256));
-				}
-				return result;
-			}
-		} catch (_) {}
-		throw "No secure random source available";
+			decoded = haxe.crypto.Base64.decode(text);
+		} catch (e:Dynamic) {
+			throw "No secure random source available: output is not base64";
+		}
+		if (decoded == null || decoded.length != expected)
+			throw "No secure random source available: expected " + expected + " bytes, got "
+				+ (decoded == null ? 0 : decoded.length);
+		return decoded;
 	}
 	#end
 }
